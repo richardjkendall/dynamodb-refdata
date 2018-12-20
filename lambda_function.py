@@ -174,14 +174,14 @@ def read_zip_file(zip_file):
 				file_name_parts[0]: {}
 			})
 		else:
+			if file_name_parts[0] not in data:
+				data.update({
+					file_name_parts[0]: {}
+				})
 			json_data = json.loads(file.read(file_name))
 			data[file_name_parts[0]][file_name_parts[1]] = json_data
+	file.close()
 	return data	
-	
-#def test():
-	#print "running test"
-	#raw_data = read_zip_file("ref.zip")
-	#tables = validate_and_process(raw_data)
 
 #if __name__ == "__main__":
 #	test()

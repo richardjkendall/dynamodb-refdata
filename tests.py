@@ -1,7 +1,12 @@
 import unittest
 import json
+import zipfile
+import tempfile
+import shutil
+import os
+from time import sleep
 
-from lambda_function import validate_and_process, DATE_NOW
+from lambda_function import validate_and_process, read_zip_file, DATE_NOW
 from errors import MalformedTableData
 
 record_missing_data = """
@@ -352,6 +357,38 @@ invalid_schema_missing_keys_field = """
 	"table": "test"
 }
 """
+
+class TestZipExtractor(unittest.TestCase):
+	def setUp(self):
+		self.maxDiff = None
+		self.complete_dict = {
+			"test": {
+				"000_schema.json": json.loads(valid_dual_key_schema),
+				"001_create.json": json.loads(valid_create_dual_key)
+			},
+			"test2": {
+				"000_schema.json": json.loads(valid_dual_key_schema),
+				"001_create.json": json.loads(valid_create_dual_key)
+			}
+		}
+	
+	def test_read_zip_file(self):
+		"""
+		Tests that a valid zip file yields a valid output dictionary
+		"""
+		temp_dir = tempfile.mkdtemp()
+		try:
+			tmp_archive = os.path.join(temp_dir, "test.zip")
+			zf = zipfile.ZipFile(tmp_archive, "w", zipfile.ZIP_DEFLATED)
+			zf.writestr("test/000_schema.json", valid_dual_key_schema)
+			zf.writestr("test/001_create.json", valid_create_dual_key)
+			zf.writestr("test2/000_schema.json", valid_dual_key_schema)
+			zf.writestr("test2/001_create.json", valid_create_dual_key)
+			zf.close()
+			self.assertDictEqual(read_zip_file(tmp_archive), self.complete_dict)
+		finally:
+			shutil.rmtree(temp_dir)
+		
 
 class TestSchema(unittest.TestCase):
 	def setUp(self):
