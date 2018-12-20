@@ -136,6 +136,9 @@ def validate_and_process(data):
 						# must have seen the key before
 						if check_for_nested_key_in_dict(tables[table_name], key_values):
 							old_data = get_nested_key_from_dict(dict = tables[table_name], keys = key_values)
+							# make sure this combination of keys has not been deleted before
+							if old_data["_meta"]["action"] == "delete":
+								raise MalformedTableData("Check record file {rec} for table {tn} as action is update but record has previously been deleted".format(rec=key, tn=table))
 							new_data = record["data"]
 							add_meta_data_to_record(record = data, file = key, action = record["action"])
 							update_record_values(old = old_data, new = new_data, key_fields = table_keys)

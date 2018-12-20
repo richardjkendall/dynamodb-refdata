@@ -4,6 +4,49 @@ import json
 from lambda_function import validate_and_process, DATE_NOW
 from errors import MalformedTableData
 
+record_missing_data = """
+{
+	"action": "create"
+}
+"""
+
+record_missing_action = """
+{
+	"data": {
+		"id1": 1
+	}
+}
+"""
+
+invalid_action = """
+{
+	"action": "blah",
+	"data": {
+		"id1": 1,
+		"id2": 2
+	}
+}
+"""
+
+delete_missing_key = """
+{
+	"action": "delete",
+	"data": {
+		"id1": 1
+	}
+}
+"""
+
+valid_delete = """
+{
+	"action": "delete",
+	"data": {
+		"id1": 1,
+		"id2": 2
+	}
+}
+"""
+
 update_missing_key = """
 {
 	"action": "update",
@@ -25,6 +68,17 @@ valid_update = """
 		"val1": 2,
 		"val2": "testing2",
 		"val3": false
+	}
+}
+"""
+
+valid_update_single_col = """
+{
+	"action": "update",
+	"data": {
+		"id1": 1,
+		"id2": 2,
+		"val1": 100
 	}
 }
 """
@@ -133,6 +187,43 @@ dict_valid_update = {
 	}
 }
 
+dict_valid_update_single_col = {
+	"test": {
+		"_schema": dict_dual_key_schema["test"]["_schema"],
+		1: {
+			2: {
+				"id1": 1,
+				"id2": 2,
+				"val1": 100,
+				"val2": "testing",
+				"val3": True,
+				"_meta": {
+					"action": "update",
+					"ref_file": "002_update.json",
+					"timestamp": DATE_NOW
+				}
+			}
+		}
+	}
+}
+
+dict_valid_delete = {
+	"test": {
+		"_schema": dict_dual_key_schema["test"]["_schema"],
+		1: {
+			2: {
+				"id1": 1,
+				"id2": 2,
+				"_meta": {
+					"action": "delete",
+					"ref_file": "002_delete.json",
+					"timestamp": DATE_NOW
+				}
+			}
+		}
+	}
+}
+
 valid_create_dual_key = """
 {
 	"action": "create",
@@ -231,7 +322,7 @@ dict_valid_update_nested_key = {
 				"id2": 3,
 				"val1": "testing",
 				"_meta": {
-					"action": "create",
+					"action": "update",
 					"ref_file": "003_update.json",
 					"timestamp": DATE_NOW
 				}
@@ -450,10 +541,12 @@ class TestUpdate(unittest.TestCase):
 		self.valid_dual_key_schema = json.loads(valid_dual_key_schema)
 		self.valid_create_dual_key_multi_field = json.loads(valid_create_dual_key_multi_field)
 		self.update_missing_key = json.loads(update_missing_key)
-		self.valid_update = json.loads(valid_update)		
+		self.valid_update = json.loads(valid_update)
+		self.valid_update_single_col = json.loads(valid_update_single_col)
 		self.valid_create_dual_key = json.loads(valid_create_dual_key)
 		self.valid_create_dual_nested_key = json.loads(valid_create_dual_nested_key)
 		self.valid_update_dual_nested_key = json.loads(valid_update_dual_nested_key)
+		self.valid_delete = json.loads(valid_delete)
 	
 	def test_missing_key(self):
 		"""
@@ -484,7 +577,7 @@ class TestUpdate(unittest.TestCase):
 	
 	def test_update_all_cols(self):
 		"""
-		Tests a valid update works
+		Tests a valid update of all columns works
 		"""
 		test = {
 			"test": {
@@ -495,6 +588,19 @@ class TestUpdate(unittest.TestCase):
 		}
 		self.assertDictEqual(validate_and_process(test), dict_valid_update)
 	
+	def test_update_single_col(self):
+		"""
+		Test a valid update of a single column works
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_create.json": self.valid_create_dual_key_multi_field,
+				"002_update.json": self.valid_update_single_col
+			}
+		}
+		self.assertDictEqual(validate_and_process(test), dict_valid_update_single_col)
+	
 	def test_update_single_entry(self):
 		"""
 		Tests that a single record is updated for a table with multiple records
@@ -503,11 +609,120 @@ class TestUpdate(unittest.TestCase):
 			"test": {
 				"000_schema.json": self.valid_dual_key_schema,
 				"001_create.json": self.valid_create_dual_key,
-				"002_create.json": self.valid_create_dual_nested_key
+				"002_delete.json": self.valid_delete,
+				"003_update.json": self.valid_update
 			}
 		}
-		
-		
+		with self.assertRaisesRegexp(MalformedTableData, "Check record file 003_update.json for table test as action is update but record has previously been deleted"):
+			validate_and_process(test)
+	
+	def test_update_of_deleted_record(self):
+		"""
+		Tests that a deleted record cannot be updated and a valid exception is thrown
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_create.json": self.valid_create_dual_key,
+				"003_update.json": self.valid_update_dual_nested_key
+			}
+		}
+
+class TestDelete(unittest.TestCase):
+	def setUp(self):
+		self.maxDiff = None
+		self.valid_single_key_schema = json.loads(valid_single_key_schema)
+		self.valid_dual_key_schema = json.loads(valid_dual_key_schema)
+		self.valid_create_dual_key_multi_field = json.loads(valid_create_dual_key_multi_field)
+		self.delete_missing_key = json.loads(delete_missing_key)
+		self.valid_delete = json.loads(valid_delete)
+	
+	def test_missing_key(self):
+		"""
+		Tests that an delete with a missing key field fails
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_create.json": self.valid_create_dual_key_multi_field,
+				"002_delete.json": self.delete_missing_key
+			}
+		}
+		with self.assertRaisesRegexp(MalformedTableData, "One or more key fields are missing in record file 002_delete.json for table test"):
+			validate_and_process(test)
+	
+	def test_delete_without_create(self):
+		"""
+		Tests that a valid exception is thrown when an delete is attempted on a record which does not exist
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"002_delete.json": self.valid_delete
+			}
+		}
+		with self.assertRaisesRegexp(MalformedTableData, "Check record file 002_delete.json for table test as action is 'delete' but keys have not been seen before"):
+			validate_and_process(test)
+	
+	def test_delete(self):
+		"""
+		Tests a valid delete works
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_create.json": self.valid_create_dual_key_multi_field,
+				"002_delete.json": self.valid_delete
+			}
+		}
+		self.assertDictEqual(validate_and_process(test), dict_valid_delete)
+
+class TestMisc(unittest.TestCase):
+	def setUp(self):
+		self.maxDiff = None
+		self.valid_dual_key_schema = json.loads(valid_dual_key_schema)
+		self.invalid_action = json.loads(invalid_action)
+		self.record_missing_data = json.loads(record_missing_data)
+		self.record_missing_action = json.loads(record_missing_action)
+	
+	def test_invalid_action(self):
+		"""
+		Tests that a valid exception is thrown for an invalid action
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_action.json": self.invalid_action
+			}
+		}
+		with self.assertRaisesRegexp(MalformedTableData, "Action value is unknown in record file 001_action.json for table test"):
+			validate_and_process(test)
+	
+	def test_data_attribute_missing(self):
+		"""
+		Tests that a valid exception is thrown when the data attribute is missing
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_action.json": self.record_missing_data
+			}
+		}
+		with self.assertRaisesRegexp(MalformedTableData, "Record file 001_action.json for table test does not contain action and data attribute"):
+			validate_and_process(test)
+	
+	def test_action_attribute_missing(self):
+		"""
+		Tests that a valid exception is thrown when the action attribute is missing
+		"""
+		test = {
+			"test": {
+				"000_schema.json": self.valid_dual_key_schema,
+				"001_action.json": self.record_missing_action
+			}
+		}
+		with self.assertRaisesRegexp(MalformedTableData, "Record file 001_action.json for table test does not contain action and data attribute"):
+			validate_and_process(test)
 			
 if __name__ == "__main__":
 	unittest.main()
