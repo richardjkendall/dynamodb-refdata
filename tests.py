@@ -4,10 +4,13 @@ import zipfile
 import tempfile
 import shutil
 import os
+import pprint
 from time import sleep
 
-from lambda_function import validate_and_process, read_zip_file, DATE_NOW
+from lambda_function import validate_and_process, read_zip_file, expand_special_values, DATE_NOW
 from errors import MalformedTableData
+
+pp = pprint.PrettyPrinter(indent=4)
 
 record_missing_data = """
 {
@@ -358,6 +361,66 @@ invalid_schema_missing_keys_field = """
 }
 """
 
+now_input_dict = {
+	"_schema": {
+		"table": "test",
+		"keys": ["id1"],
+		"should_not_change": "%NOW%"
+	},
+	1: {
+		"id1": 1,
+		"dt_now": "%NOW%",
+		"m_map": {
+			"dt_now": "%NOW%"
+		},
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	},
+	2: {
+		"id1": 1,
+		"dt_now": "%NOW%",
+		"m_map": {
+			"dt_now": "%NOW%"
+		},
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	}
+}
+
+now_output_dict = {
+	"_schema": {
+		"table": "test",
+		"keys": ["id1"],
+		"should_not_change": "%NOW%"
+	},
+	1: {
+		"id1": 1,
+		"dt_now": DATE_NOW,
+		"m_map": {
+			"dt_now": DATE_NOW
+		},
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	},
+	2: {
+		"id1": 1,
+		"dt_now": DATE_NOW,
+		"m_map": {
+			"dt_now": DATE_NOW
+		},
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	}
+}
+
 class TestZipExtractor(unittest.TestCase):
 	def setUp(self):
 		self.maxDiff = None
@@ -388,7 +451,6 @@ class TestZipExtractor(unittest.TestCase):
 			self.assertDictEqual(read_zip_file(tmp_archive), self.complete_dict)
 		finally:
 			shutil.rmtree(temp_dir)
-		
 
 class TestSchema(unittest.TestCase):
 	def setUp(self):
@@ -760,6 +822,13 @@ class TestMisc(unittest.TestCase):
 		}
 		with self.assertRaisesRegexp(MalformedTableData, "Record file 001_action.json for table test does not contain action and data attribute"):
 			validate_and_process(test)
+	
+	def test_now_replacer(self):
+		"""
+		Tests that %NOW% is expanded to DATE_NOW
+		"""
+		test = expand_special_values(now_input_dict)
+		self.assertDictEqual(test, now_output_dict)
 			
 if __name__ == "__main__":
 	unittest.main()
