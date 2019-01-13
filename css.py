@@ -59,6 +59,10 @@ TD {
 	width: 80%;
 }
 
+.ResultsTable TD {
+	text-align: left;
+}
+
 .label {
         display: inline-block;
         font-weight: bold;
@@ -86,7 +90,7 @@ TD {
 }
 
 .none {
-        background-color: #efefef;
+        background-color: #cfcfcf;
         color: #000000;
 }
 """

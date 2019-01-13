@@ -361,6 +361,94 @@ invalid_schema_missing_keys_field = """
 }
 """
 
+now_list_input_dict = {
+	"_schema": {
+		"table": "test",
+		"keys": ["id1"],
+		"should_not_change": "%NOW%"
+	},
+	1: {
+		"id1": 1,
+		"dt_now": "%NOW%",
+		"l_m_map": [
+			{
+				"id": 1,
+				"dt_now": "%NOW%"
+			},
+			{
+				"id": 2,
+				"dt_now": "%NOW%"
+			}
+		],
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	},
+	2: {
+		"id1": 1,
+		"dt_now": "%NOW%",
+		"l_m_map": [
+			{
+				"id": 1,
+				"dt_now": "%NOW%"
+			},
+			{
+				"id": 2,
+				"dt_now": "%NOW%"
+			}
+		],
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	}
+}
+
+now_list_output_dict = {
+	"_schema": {
+		"table": "test",
+		"keys": ["id1"],
+		"should_not_change": "%NOW%"
+	},
+	1: {
+		"id1": 1,
+		"dt_now": DATE_NOW,
+		"l_m_map": [
+			{
+				"id": 1,
+				"dt_now": DATE_NOW
+			},
+			{
+				"id": 2,
+				"dt_now": DATE_NOW
+			}
+		],
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	},
+	2: {
+		"id1": 1,
+		"dt_now": DATE_NOW,
+		"l_m_map": [
+			{
+				"id": 1,
+				"dt_now": DATE_NOW
+			},
+			{
+				"id": 2,
+				"dt_now": DATE_NOW
+			}
+		],
+		"_meta": {
+			"action": "create",
+			"should_not_change": "%NOW%"
+		}
+	}
+}
+
 now_input_dict = {
 	"_schema": {
 		"table": "test",
@@ -829,6 +917,13 @@ class TestMisc(unittest.TestCase):
 		"""
 		test = expand_special_values(now_input_dict)
 		self.assertDictEqual(test, now_output_dict)
+
+	def test_now_list_replacer(self):
+		"""
+		Tests that %NOW% is expanded to DATE_NOW for list cases
+		"""
+		test = expand_special_values(now_list_input_dict)
+		self.assertDictEqual(test, now_list_output_dict)
 			
 if __name__ == "__main__":
 	unittest.main()

@@ -1,17 +1,48 @@
+from boto3.session import Session
 import boto3
+import botocore
 import zipfile
+import tempfile
+import shutil
+import os
 import json
 import datetime
 import pprint
-from errors import MalformedTableData
+import StringIO
+import sys
+import traceback
+from errors import MalformedTableData, ProcessError
 from css import stylesheet
 
 boto3.setup_default_session(region_name="ap-southeast-2")
+
 ddb = boto3.resource("dynamodb")
+code_pipeline = boto3.client("codepipeline")
+sns = boto3.client("sns")
 
 pp = pprint.PrettyPrinter(indent=4)
 
 DATE_NOW = datetime.datetime.utcnow().isoformat()
+
+def mark_cp_job_success(message, job):
+	"""
+	Marks a codepipeline job as successful
+	"""
+	print message
+	code_pipeline.put_job_success_result(jobId=job)
+
+def mark_cp_job_failed(message, job):
+	"""
+	Marks a codepipeline job as failed
+	"""
+	print message
+	code_pipeline.put_job_failure_result(
+		jobId = job, 
+		failureDetails = {
+			"message": message, 
+			"type": "JobFailed"
+		}
+	)
 
 def create_delete_record(key_fields, record):
 	"""
@@ -79,6 +110,7 @@ def update_record_values(old, new, key_fields):
 			new_key: new[new_key]
 		})
 
+# need to deal with lists...
 def expand_special_values(d):
 	"""
 	Recurses through dict and replaces special values
@@ -94,6 +126,9 @@ def expand_special_values(d):
 				key: expand_special_values(d[key])
 			})
 		return d
+	elif isinstance(d, list):
+		# loop through the entries in the list
+		return list(map(lambda x: expand_special_values(x), d))
 	else:
 		# if d is not a dict we must be at a leaf, so check if it is a special value to overwrite
 		if d == "%NOW%":
@@ -182,9 +217,13 @@ def validate_and_process(data):
 						raise MalformedTableData("Action value is unknown in record file {rec} for table {tn}".format(rec=key, tn=table))
 				else:
 					raise MalformedTableData("Record file {rec} for table {tn} does not contain action and data attribute".format(rec=key, tn=table))
+	tables = expand_special_values(tables)
 	return tables
 
 def ddb_get_item_consistent(keys, table_name):
+	"""
+	Performs a consistent read on table_name for keys
+	"""
 	table = ddb.Table(table_name)
 	item = table.get_item(
 		Key = keys,
@@ -195,7 +234,82 @@ def ddb_get_item_consistent(keys, table_name):
 	else:
 		return None
 
+def ddb_create_item(keys, data, table_name):
+	"""
+	Writes data to table_name 
+	"""
+	table = ddb.Table(table_name)
+	data_to_write = {k :v for (k, v) in data.iteritems() if k != "_compare_result"}
+	condition_expression = ""
+	key_count = 0
+	for key in keys:
+		if key_count == 0:
+			condition_expression = "attribute_not_exists({key})".format(key=key)
+		else:
+			condition_expression += " AND attribute_not_exists({key})".format(key=key)
+	try:
+		table.put_item(
+			ConditionExpression=condition_expression,
+			Item=data_to_write
+		)
+		return True
+	except ddb.exceptions.ConditionalCheckFailedException:
+		return False
+
+def ddb_delete_item(keys, table_name):
+	"""
+	Deletes an item from table_name using keys
+	"""
+	table = ddb.Table(table_name)
+	table.delete_item(
+		Key = keys
+	)
+
+def ddb_update_item(keys, delta, meta, table_name):
+	"""
+	Updates record with keys in table_name using delta
+	"""
+	table = ddb.Table(table_name)
+	update_map = {}
+	for k in delta["new"]:
+		update_map.update({
+			k: {
+				"Value": delta["new"][k],
+				"Action": "PUT"
+			}
+		})
+	for k in delta["changed"]:
+		update_map.update({
+			k: {
+				"Value": delta["changed"][k]["new"],
+				"Action": "PUT"
+			}
+		})
+	for k in delta["removed"]:
+		update_map.update({
+			k: {
+				"Action": "DELETE"
+			}
+		})
+	update_map.update({
+		"_meta": {
+			"Value": meta,
+			"Action": "PUT"
+		}
+	})
+	table.update_item(
+		Key = keys,
+		AttributeUpdates = update_map
+	)
+
 def compare_single_record(new, current, key_fields):
+	"""
+	Compares a new and current version of a record looking for added, changed and removed fields
+	
+	Returns a dict with keys "new", "changed" and "removed"
+	
+	Ignores changes to fields named dt_created (special field for creation date) and dt_modified if no other fields have changed
+	"""
 	new_attributes = {}
 	changed_attributes = {}
 	removed_attributes = {}
@@ -207,17 +321,23 @@ def compare_single_record(new, current, key_fields):
 					new_key: ""
 				})
 			else:
-				if current[new_key] != new[new_key]:
-					changed_attributes.update({
-						new_key: {
-							"current": current[new_key],
-							"new": new[new_key]
-						}
-					})
+				if new_key.upper() != "DT_CREATED":
+					if current[new_key] != new[new_key]:
+						changed_attributes.update({
+							new_key: {
+								"current": current[new_key],
+								"new": new[new_key]
+							}
+						})
 		else:
-			new_attributes.update({
-				new_key: new[new_key]
-			})
+			if new[new_key] != "":
+				new_attributes.update({
+					new_key: new[new_key]
+				})
+	# if there is only one changed attribute and it is the DT_MODIFIED field then remove it from the list of changes
+	if len(changed_attributes) == 1:
+		if list(changed_attributes.keys())[0].upper() == "DT_MODIFIED":
+			changed_attributes = {}
 	return {
 		"new": new_attributes,
 		"changed": changed_attributes,
@@ -250,7 +370,7 @@ def create_change_report_entries(data, schema):
 			for k in [key for key in data.keys() if key[0:1] != "_"]:
 				sub_table += "<tr><td>{col}</td>".format(col = k)
 				if isinstance(data[k], (list, dict)):
-					sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data[k]))
+					sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data[k], indent=2, sort_keys=True))
 				else:
 					sub_table += "<td>{val}</td>".format(val=data[k])
 				sub_table += "</tr>"
@@ -268,7 +388,7 @@ def create_change_report_entries(data, schema):
 				for k in data["_compare_result"]["delta"]["new"]:
 					sub_table += "<tr><td>{col}</td>".format(col = k)
 					if isinstance(data["_compare_result"]["delta"]["new"][k], (list, dict)):
-						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["new"][k]))
+						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["new"][k], indent=2, sort_keys=True))
 					else:
 						sub_table += "<td>{val}</td>".format(val=data["_compare_result"]["delta"]["new"][k])
 					sub_table += "</tr>"
@@ -283,11 +403,11 @@ def create_change_report_entries(data, schema):
 				for k in data["_compare_result"]["delta"]["changed"]:
 					sub_table += "<tr><td>{col}</td>".format(col = k)
 					if isinstance(data["_compare_result"]["delta"]["changed"][k]["current"], (list, dict)):
-						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["current"]))
+						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["current"], indent=2, sort_keys=True))
 					else:
 						sub_table += "<td>{val}</td>".format(val=data["_compare_result"]["delta"]["changed"][k]["current"])
 					if isinstance(data["_compare_result"]["delta"]["changed"][k]["new"], (list, dict)):
-						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["new"]))
+						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["new"], indent=2, sort_keys=True))
 					else:
 						sub_table += "<td>{val}</td>".format(val=data["_compare_result"]["delta"]["changed"][k]["new"])
 					sub_table += "</tr>"
@@ -357,9 +477,9 @@ def compare_to_dynamo(data, env_prefix, prev_keys, schema):
 	# check if this is a leaf
 	if "_meta" in data:
 		#print "\n***item"
-		pp.pprint(prev_keys)
-		pp.pprint(schema)
-		pp.pprint(data)
+		#pp.pprint(prev_keys)
+		#pp.pprint(schema)
+		#pp.pprint(data)
 		# create
 		if data["_meta"]["action"] == "create":
 			# need to check if this item exists in dynamodb
@@ -450,7 +570,55 @@ def compare_to_dynamo(data, env_prefix, prev_keys, schema):
 				prev_keys = prev_keys + [key],
 				schema = schema
 			)
-	
+
+def apply_to_dynamo(data, env_prefix, schema):
+	"""
+	Applies changes to dynamo DB table from local copy of data
+	"""
+	# check if this is a leaf with a compare result:
+	if "_compare_result" in data:
+		table = ddb.Table("dev_RycCvTemplate")
+		compare_result = data["_compare_result"]
+		keys = {k: v for (k, v) in data.iteritems() if k in schema["keys"]}
+		if compare_result["action"] == "create":
+			result = ddb_create_item(
+				keys = keys,
+				data = data,
+				table_name = "{env}_{name}".format(env=env_prefix, name=schema["table"])
+			)
+			if result:
+				data.update({
+					"_result": "completed"
+				})
+			else:
+				data.update({
+					"_result": "not_completed"
+				})
+		elif compare_result["action"] == "update":
+			ddb_update_item(
+				keys = keys,
+				delta = compare_result["delta"],
+				meta = data["_meta"],
+				table_name = "{env}_{name}".format(env=env_prefix, name=schema["table"])
+			)
+		elif compare_result["action"] == "delete":
+			ddb_delete_item(
+				keys = keys,
+				table_name = "{env}_{name}".format(env=env_prefix, name=schema["table"])
+			)
+			data.update({
+				"_result": "completed"
+			})
+	else:
+		if "_schema" in data:
+			schema = data["_schema"]
+		for key in [key for key in data.keys() if key not in ["_schema"]]:
+			apply_to_dynamo(
+				data = data[key],
+				env_prefix = env_prefix,
+				schema = schema
+			)
+			
 def read_zip_file(zip_file):
 	"""
 	Reads a zip file and outputs a dictionary of reference data to be processed
@@ -473,6 +641,193 @@ def read_zip_file(zip_file):
 	file.close()
 	return data	
 
+def get_s3_client(creds = None):
+	"""
+	Gets an S3 client using creds if specified
+	"""
+	print "in get s3 client"
+	print creds
+	if creds:
+		# need to create a new S3 client with the creds
+		session = Session(
+			aws_access_key_id = creds["accessKeyId"],
+			aws_secret_access_key = creds["secretAccessKey"],
+			aws_session_token = creds["sessionToken"]
+		)
+		client = session.client("s3", config=botocore.client.Config(
+			signature_version="s3v4"
+		))
+		return client
+	else:
+		return boto3.client("s3")
+	
+def get_file_from_s3(bucket, path, creds = None):
+	"""
+	Downloads the file at path from S3 bucket to a new temp file.
+	
+	Returns the temp file path
+	
+	Uses creds if specified
+	"""
+	client = get_s3_client(creds)
+	temp_dir = tempfile.mkdtemp()
+	file_name = path.split("/").pop()
+	download_loc = os.path.join(temp_dir, file_name)
+	client.download_file(bucket, path, download_loc)
+	return download_loc
+
+def put_html_file_in_s3(bucket, path, html, creds = None):
+	"""
+	Puts HTML report file in S3 at path
+	
+	Uses creds if specified
+	"""
+	client = get_s3_client(creds)
+	data = StringIO.StringIO(html)
+	client.put_object(
+		Bucket=bucket,
+		Key="{p}".format(p=path), 
+		Body=data#,
+		#ServerSideEncryption="aws:kms"
+	)
+
+def get_presigned_url_for_review(bucket, path, expires):
+	"""
+	Uses plain client to generate a presigned URL
+	"""
+	client = get_s3_client()
+	url = client.generate_presigned_url(
+		ClientMethod="get_object",
+		Params={
+			"Bucket": bucket,
+			"Key": path
+		},
+		ExpiresIn=expires
+	)
+	return url
+
+def cp_event_handler(event, context):
+	"""
+	Gets event from codepipeline and uses the data to update DynamoDB data
+	
+	 - Gets S3 file as input
+	 - reads it
+	 - compares data to dynamo
+	 - creates a report
+	 - optionally it performs the changes
+	"""
+	job_id = event["CodePipeline.job"]["id"]
+	success = False
+	try:
+		job_data = event["CodePipeline.job"]["data"]
+		action = job_data["actionConfiguration"]["configuration"]
+		s3creds = job_data["artifactCredentials"]
+		input_artifact = job_data["inputArtifacts"][0]
+		output_artifact = job_data["outputArtifacts"][0]
+		
+		# need to get user parameters
+		user_parameters = action["UserParameters"]
+		parameters = {}
+		for parameter in user_parameters.split(","):
+			kvp = parameter.split("=")
+			if len(kvp) != 2:
+				raise ProcessError("This is an invalid parameter {p}".format(p = parameter))
+			else:
+				parameters.update({
+					kvp[0]: kvp[1]
+				})
+		
+		# get S3 file
+		temp_zip_file = get_file_from_s3(
+			bucket = input_artifact["location"]["s3Location"]["bucketName"],
+			path = input_artifact["location"]["s3Location"]["objectKey"],
+			creds = s3creds
+		)
+		
+		# read zip file
+		raw = read_zip_file(temp_zip_file)
+		
+		# process the tables
+		tables = validate_and_process(raw)
+		
+		# for each table we need to compare to dynamodb
+		for table in tables:
+			compare_to_dynamo(
+				data = tables[table],
+				env_prefix = parameters["env"],
+				prev_keys = [],
+				schema = {}
+			)
+		
+		# if mode=report then produce the change report
+		if parameters["mode"] == "report":
+			# create report
+			report = create_change_report(
+				data = tables,
+				env_prefix = parameters["env"]
+			)
+			# upload it to the reports bucket
+			put_html_file_in_s3(
+				bucket = parameters["reportbucket"],
+				path = "{id}/report.html".format(id = job_id),
+				html = report
+			)
+			# get URL for report
+			url = get_presigned_url_for_review(
+				bucket = parameters["reportbucket"],
+				path = "{id}/report.html".format(id = job_id),
+				expires = 600
+			)
+			# send sns message with URL for review
+			sns.publish(
+				TopicArn=parameters["topic"],
+				Message="""
+Please review this report and approve if it can be deployed.  You will have been sent a separate notification asking for that approval.
+
+{url}
+				""".format(url=url)
+			)
+			# tell CP we were successful
+			success = True
+			mark_cp_job_success(
+				message = "Report is ready @ URL: {url}".format(url=url),
+				job = job_id
+			)
+			
+		# if the mode=commit then we need to make changes to dynamo DB
+		elif parameters["mode"] == "commit":
+			apply_to_dynamo(
+				data = tables,
+				env_prefix = parameters["env"],
+				schema = {}
+			)
+			# tell CP we were successful
+			success = True
+			mark_cp_job_success(
+				message = "Database changes have been made",
+				job = job_id
+			)
+	except:
+		traceback.print_tb(sys.exc_info()[2])
+		success = True
+		mark_cp_job_failed(
+			message = "Unexpected err: {err}".format(err = sys.exc_info()[1]),
+			job = job_id
+		)
+	finally:
+		if not success:
+			mark_cp_job_failed(
+				message = "Hit catch all and failed",
+				job = job_id
+			)
+
+def lambda_handler(event, context):
+	"""
+	Entry point for AWS lambda
+	"""
+	cp_event_handler(event, context)
+
+"""
 if __name__ == "__main__":
 	dict_valid_create_nested_key = {
 		"test": {
@@ -485,12 +840,14 @@ if __name__ == "__main__":
 					"id1": 1,
 					"id2": 2,
 					"val1": "",
-					"val2": 100,
+					"val2": 1001,
 					"val3": True,
 					"val4": {
 						"t1": "hello",
-						"t2": "hello2"
+						"t2": "hello3"
 					},
+					"dt_Created": "%NOW%",
+					"dt_Modified": "%NOW%",
 					"_meta": {
 						"action": "update",
 						"ref_file": "001_create.json",
@@ -519,15 +876,22 @@ if __name__ == "__main__":
 			}
 		}
 	}
-	compare_to_dynamo(
-		data = dict_valid_create_nested_key["test"],
-		env_prefix = "dev",
-		prev_keys = [],
-		schema = {}
-	)
-	#pp.pprint(dict_valid_create_nested_key)
+	dict_valid_create_nested_key = expand_special_values(dict_valid_create_nested_key)
+	for k in dict_valid_create_nested_key:
+		compare_to_dynamo(
+			data = dict_valid_create_nested_key[k],
+			env_prefix = "dev",
+			prev_keys = [],
+			schema = {}
+		)
 	report = create_change_report(
 		data = dict_valid_create_nested_key,
 		env_prefix = "dev"
 	)
-	
+	print report
+	#apply_to_dynamo(
+	#	data = dict_valid_create_nested_key,
+	#	env_prefix = "dev",
+	#	schema = {}
+	#)
+"""
