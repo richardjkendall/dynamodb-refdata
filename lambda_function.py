@@ -7,7 +7,6 @@ import shutil
 import os
 import json
 import datetime
-import pprint
 import StringIO
 import sys
 import traceback
@@ -19,8 +18,6 @@ boto3.setup_default_session(region_name="ap-southeast-2")
 ddb = boto3.resource("dynamodb")
 code_pipeline = boto3.client("codepipeline")
 sns = boto3.client("sns")
-
-pp = pprint.PrettyPrinter(indent=4)
 
 DATE_NOW = datetime.datetime.utcnow().isoformat()
 
@@ -105,7 +102,6 @@ def update_record_values(old, new, key_fields):
 	new_keys = [key for key in new.keys() if key not in key_fields]
 	# replace keys in old dict with values from new dict
 	for new_key in new_keys:
-		#print "replacing {nk}".format(nk=new_key)
 		old.update({
 			new_key: new[new_key]
 		})
@@ -121,7 +117,6 @@ def expand_special_values(d):
 	if isinstance(d, dict):
 		# loop through keys in dict, excluding special keys: _meta and _schema
 		for key in [key for key in d.keys() if key not in ["_meta", "_schema"]]:
-			#print "working on key {k}".format(k = key)
 			d.update({
 				key: expand_special_values(d[key])
 			})
@@ -355,7 +350,6 @@ def create_change_report_entries(data, schema):
 	 - state of current row in ddb
 	 - data to be created/updated
 	"""
-	#pp.pprint(data)
 	if "_compare_result" in data:
 		html = "<tr>"
 		for key_field in schema["keys"]:
@@ -433,10 +427,7 @@ def create_change_report_entries(data, schema):
 		return [html]
 	else:
 		entries = []
-		#for k in data:
-		#	print k
 		for k in [key for key in data.keys() if str(key)[0:1] != "_"]:
-			#print k
 			entries = entries + create_change_report_entries(
 				data = data[k],
 				schema = schema
@@ -476,10 +467,6 @@ def compare_to_dynamo(data, env_prefix, prev_keys, schema):
 	"""
 	# check if this is a leaf
 	if "_meta" in data:
-		#print "\n***item"
-		#pp.pprint(prev_keys)
-		#pp.pprint(schema)
-		#pp.pprint(data)
 		# create
 		if data["_meta"]["action"] == "create":
 			# need to check if this item exists in dynamodb
@@ -645,8 +632,6 @@ def get_s3_client(creds = None):
 	"""
 	Gets an S3 client using creds if specified
 	"""
-	print "in get s3 client"
-	print creds
 	if creds:
 		# need to create a new S3 client with the creds
 		session = Session(
@@ -723,7 +708,6 @@ def cp_event_handler(event, context):
 		action = job_data["actionConfiguration"]["configuration"]
 		s3creds = job_data["artifactCredentials"]
 		input_artifact = job_data["inputArtifacts"][0]
-		output_artifact = job_data["outputArtifacts"][0]
 		
 		# need to get user parameters
 		user_parameters = action["UserParameters"]
@@ -736,6 +720,12 @@ def cp_event_handler(event, context):
 				parameters.update({
 					kvp[0]: kvp[1]
 				})
+		
+		# check basic parameters are present
+		if "mode" not in parameters:
+			raise ProcessError("Mode not specified")
+		if "env" not in parameters:
+			raise ProcessError("Env not specified")
 		
 		# get S3 file
 		temp_zip_file = get_file_from_s3(
@@ -761,6 +751,12 @@ def cp_event_handler(event, context):
 		
 		# if mode=report then produce the change report
 		if parameters["mode"] == "report":
+			# check mandatory parameters are present
+			if "reportbucket" not in parameters:
+				raise ProcessError("Report bucket not specified")
+			if "topic" not in parameters:
+				raise ProcessError("Topic not specified")
+			
 			# create report
 			report = create_change_report(
 				data = tables,
@@ -826,72 +822,3 @@ def lambda_handler(event, context):
 	Entry point for AWS lambda
 	"""
 	cp_event_handler(event, context)
-
-"""
-if __name__ == "__main__":
-	dict_valid_create_nested_key = {
-		"test": {
-			"_schema": {
-				"table": "test",
-				"keys": ["id1", "id2"]
-			},
-			1: {
-				2: {
-					"id1": 1,
-					"id2": 2,
-					"val1": "",
-					"val2": 1001,
-					"val3": True,
-					"val4": {
-						"t1": "hello",
-						"t2": "hello3"
-					},
-					"dt_Created": "%NOW%",
-					"dt_Modified": "%NOW%",
-					"_meta": {
-						"action": "update",
-						"ref_file": "001_create.json",
-						"timestamp": DATE_NOW
-					}
-				},
-				3: {
-					"id1": 1,
-					"id2": 3,
-					"val1": "test",
-					"_meta": {
-						"action": "create",
-						"ref_file": "002_create.json",
-						"timestamp": DATE_NOW
-					}
-				},
-				4: {
-					"id1": 1,
-					"id2": 4,
-					"_meta": {
-						"action": "delete",
-						"ref_file": "002_create.json",
-						"timestamp": DATE_NOW
-					}
-				}
-			}
-		}
-	}
-	dict_valid_create_nested_key = expand_special_values(dict_valid_create_nested_key)
-	for k in dict_valid_create_nested_key:
-		compare_to_dynamo(
-			data = dict_valid_create_nested_key[k],
-			env_prefix = "dev",
-			prev_keys = [],
-			schema = {}
-		)
-	report = create_change_report(
-		data = dict_valid_create_nested_key,
-		env_prefix = "dev"
-	)
-	print report
-	#apply_to_dynamo(
-	#	data = dict_valid_create_nested_key,
-	#	env_prefix = "dev",
-	#	schema = {}
-	#)
-"""
