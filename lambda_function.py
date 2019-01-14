@@ -16,6 +16,7 @@ from css import stylesheet
 boto3.setup_default_session(region_name="ap-southeast-2")
 
 ddb = boto3.resource("dynamodb")
+ddb_c = boto3.client("dynamodb")
 code_pipeline = boto3.client("codepipeline")
 sns = boto3.client("sns")
 
@@ -248,7 +249,8 @@ def ddb_create_item(keys, data, table_name):
 			Item=data_to_write
 		)
 		return True
-	except ddb.exceptions.ConditionalCheckFailedException:
+	except ddb_c.exceptions.ConditionalCheckFailedException:
+		traceback.print_tb(sys.exc_info()[2])
 		return False
 
 def ddb_delete_item(keys, table_name):
