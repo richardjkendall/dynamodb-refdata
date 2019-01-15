@@ -566,7 +566,6 @@ def apply_to_dynamo(data, env_prefix, schema):
 	"""
 	# check if this is a leaf with a compare result:
 	if "_compare_result" in data:
-		table = ddb.Table("dev_RycCvTemplate")
 		compare_result = data["_compare_result"]
 		keys = {k: v for (k, v) in data.iteritems() if k in schema["keys"]}
 		if compare_result["action"] == "create":
