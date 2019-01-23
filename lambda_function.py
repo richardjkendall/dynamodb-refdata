@@ -569,7 +569,7 @@ def compare_to_dynamo(data, env_prefix, prev_keys, schema):
 				data.update({
 					"_compare_result": {
 						"state": "does_not_exist",
-						"action": "none"
+						"action": "create"
 					}
 				})
 		elif data["_meta"]["action"] == "delete":
@@ -772,6 +772,7 @@ def local_run(folder, environment):
 			prev_keys = [],
 			schema = {}
 		)
+	#print(json.dumps(tables))
 	report = create_change_report(
 		data = tables,
 		env_prefix = environment
