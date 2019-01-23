@@ -10,8 +10,10 @@ import datetime
 import StringIO
 import sys
 import traceback
+from pprint import pprint
 from errors import MalformedTableData, ProcessError
 from css import stylesheet
+from decimal_encoder import DecimalEncoder
 
 boto3.setup_default_session(region_name="ap-southeast-2")
 
@@ -195,7 +197,7 @@ def validate_and_process(data):
 							if old_data["_meta"]["action"] == "delete":
 								raise MalformedTableData("Check record file {rec} for table {tn} as action is update but record has previously been deleted".format(rec=key, tn=table))
 							new_data = record["data"]
-							add_meta_data_to_record(record = data, file = key, action = record["action"])
+							add_meta_data_to_record(record = new_data, file = key, action = record["action"])
 							update_record_values(old = old_data, new = new_data, key_fields = table_keys)
 						else:
 							raise MalformedTableData("Check record file {rec} for table {tn} as action is 'update' but keys have not been seen before".format(rec=key, tn=table))
@@ -299,6 +301,47 @@ def ddb_update_item(keys, delta, meta, table_name):
 		AttributeUpdates = update_map
 	)
 
+def deep_field_compare(new, current):
+	"""
+	Checks if the field meets the rules to be different
+	
+	Returns true when the same, false when different
+	
+	Ignores dict changes if the only changes are the DT_CREATED and DT_MODIFIED fields
+	"""
+	if isinstance(new, dict):
+		# check keys for difference
+		different_fields = []
+		for key in new:
+			if key in current:
+				# this is an existing field
+				if not deep_field_compare(new[key], current[key]):
+					# which has changed
+					different_fields.append(key)
+			else:
+				# this is a new field
+				different_fields.append(key)
+		for key in [key for key in current if key not in new]:
+			# this is a removed field
+			different_fields.append(key)
+		different_fields = list(map(lambda x: x.upper(), different_fields))
+		if not set(different_fields).issubset(set(["DT_CREATED", "DT_MODIFIED"])):
+			return False
+		else:
+			return True
+	elif isinstance(new, list):
+		# check list elements for difference
+		different = True
+		if len(new) == len(current):
+			for i in range(0, len(new)):
+				if not deep_field_compare(new[i], current[i]):
+					different = False
+			return different
+		else:
+			return False
+	else:
+		return new == current
+	
 def compare_single_record(new, current, key_fields):
 	"""
 	Compares a new and current version of a record looking for added, changed and removed fields
@@ -314,12 +357,15 @@ def compare_single_record(new, current, key_fields):
 		if new_key in current:
 			# check if blank in new
 			if new[new_key] == "":
+				# yes, so we will remove this attributed
 				removed_attributes.update({
 					new_key: ""
 				})
 			else:
 				if new_key.upper() != "DT_CREATED":
-					if current[new_key] != new[new_key]:
+					# need to do a deep compare of these objects to avoid DT changes
+					if not deep_field_compare(new[new_key], current[new_key]):
+					#if current[new_key] != new[new_key]:
 						changed_attributes.update({
 							new_key: {
 								"current": current[new_key],
@@ -332,7 +378,7 @@ def compare_single_record(new, current, key_fields):
 					new_key: new[new_key]
 				})
 	# if there is only one changed attribute and it is the DT_MODIFIED field then remove it from the list of changes
-	if len(changed_attributes) == 1:
+	if len(changed_attributes) == 1 and len(new_attributes) + len(removed_attributes) == 0:
 		if list(changed_attributes.keys())[0].upper() == "DT_MODIFIED":
 			changed_attributes = {}
 	return {
@@ -366,7 +412,7 @@ def create_change_report_entries(data, schema):
 			for k in [key for key in data.keys() if key[0:1] != "_"]:
 				sub_table += "<tr><td>{col}</td>".format(col = k)
 				if isinstance(data[k], (list, dict)):
-					sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data[k], indent=2, sort_keys=True))
+					sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data[k], indent=2, sort_keys=True, cls=DecimalEncoder))
 				else:
 					sub_table += "<td>{val}</td>".format(val=data[k])
 				sub_table += "</tr>"
@@ -384,7 +430,7 @@ def create_change_report_entries(data, schema):
 				for k in data["_compare_result"]["delta"]["new"]:
 					sub_table += "<tr><td>{col}</td>".format(col = k)
 					if isinstance(data["_compare_result"]["delta"]["new"][k], (list, dict)):
-						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["new"][k], indent=2, sort_keys=True))
+						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["new"][k], indent=2, sort_keys=True, cls=DecimalEncoder))
 					else:
 						sub_table += "<td>{val}</td>".format(val=data["_compare_result"]["delta"]["new"][k])
 					sub_table += "</tr>"
@@ -399,11 +445,11 @@ def create_change_report_entries(data, schema):
 				for k in data["_compare_result"]["delta"]["changed"]:
 					sub_table += "<tr><td>{col}</td>".format(col = k)
 					if isinstance(data["_compare_result"]["delta"]["changed"][k]["current"], (list, dict)):
-						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["current"], indent=2, sort_keys=True))
+						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["current"], indent=2, sort_keys=True, cls=DecimalEncoder))
 					else:
 						sub_table += "<td>{val}</td>".format(val=data["_compare_result"]["delta"]["changed"][k]["current"])
 					if isinstance(data["_compare_result"]["delta"]["changed"][k]["new"], (list, dict)):
-						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["new"], indent=2, sort_keys=True))
+						sub_table += "<td><pre>{val}</pre></td>".format(val=json.dumps(data["_compare_result"]["delta"]["changed"][k]["new"], indent=2, sort_keys=True, cls=DecimalEncoder))
 					else:
 						sub_table += "<td>{val}</td>".format(val=data["_compare_result"]["delta"]["changed"][k]["new"])
 					sub_table += "</tr>"
@@ -692,6 +738,46 @@ def get_presigned_url_for_review(bucket, path, expires):
 	)
 	return url
 
+def read_folder(folder):
+	"""
+	Reads a folder and create data structure
+	"""
+	data = {}
+	for dir in os.listdir(folder):
+		# ignore folders which start with .
+		if not dir[:1] == ".":
+			data[dir] = {}
+			for file in os.listdir("{r}/{d}".format(r=folder, d=dir)):
+				json_file = "{r}/{d}/{f}".format(r=folder, d=dir, f=file)
+				with open(json_file) as f:
+					json_data = json.load(f)
+					f.close()
+				data[dir][file] = json_data
+	return data
+				
+	
+def local_run(folder, environment):
+	"""
+	Runs locally for testing, only does a compare, not a commit
+	"""
+	raw = read_folder(folder)
+	#print(json.dumps(raw))
+	tables = validate_and_process(raw)
+	#print(json.dumps(tables))
+	#pprint(tables)
+	for table in tables:
+		compare_to_dynamo(
+			data = tables[table],
+			env_prefix = environment,
+			prev_keys = [],
+			schema = {}
+		)
+	report = create_change_report(
+		data = tables,
+		env_prefix = environment
+	)
+	print report
+	
 def cp_event_handler(event, context):
 	"""
 	Gets event from codepipeline and uses the data to update DynamoDB data
@@ -823,3 +909,10 @@ def lambda_handler(event, context):
 	Entry point for AWS lambda
 	"""
 	cp_event_handler(event, context)
+
+if __name__ == "__main__":
+	# entry point for local running
+	local_run(
+		folder=sys.argv[1],
+		environment=sys.argv[2]
+	)

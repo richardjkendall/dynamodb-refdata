@@ -7,7 +7,7 @@ import os
 import pprint
 from time import sleep
 
-from lambda_function import validate_and_process, read_zip_file, expand_special_values, DATE_NOW
+from lambda_function import validate_and_process, read_zip_file, expand_special_values, DATE_NOW, deep_field_compare
 from errors import MalformedTableData
 
 pp = pprint.PrettyPrinter(indent=4)
@@ -509,6 +509,110 @@ now_output_dict = {
 	}
 }
 
+dict_compare_created_only_no_changes_current = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Created": "blah"
+}
+
+dict_compare_created_only_no_changes_new = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Created": "blah1"
+}
+
+dict_compare_created_only_with_changes_current = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Created": "blah"
+}
+
+dict_compare_created_only_with_changes_new = {
+	"field1": "hello",
+	"field2": "test2",
+	"dt_Created": "blah1"
+}
+
+dict_compare_modified_only_no_changes_current = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Modified": "blah"
+}
+
+dict_compare_modified_only_no_changes_new = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Modified": "blah1"
+}
+
+dict_compare_modified_only_with_changes_current = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Modified": "blah"
+}
+
+dict_compare_modified_only_with_changes_new = {
+	"field1": "hello",
+	"field2": "test2",
+	"dt_Modified": "blah1"
+}
+
+dict_compare_created_and_modified_no_changes_current = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Modified": "blah",
+	"dt_Created": "blah"
+}
+
+dict_compare_created_and_modified_no_changes_new = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Modified": "blah1",
+	"dt_Created": "blah1"
+}
+
+dict_compare_created_and_modified_with_changes_current = {
+	"field1": "hello",
+	"field2": "test1",
+	"dt_Modified": "blah",
+	"dt_Created": "blah"
+}
+
+dict_compare_created_and_modified_with_changes_new = {
+	"field1": "hello",
+	"field2": "test2",
+	"dt_Modified": "blah1",
+	"dt_Created": "blah1"
+}
+
+dict_list_compare_no_changes_current = [
+	dict_compare_created_and_modified_no_changes_current,
+	dict_compare_created_and_modified_no_changes_current,
+	dict_compare_created_and_modified_no_changes_current,
+	dict_compare_created_and_modified_no_changes_current
+]
+
+dict_list_compare_no_changes_new = [
+	dict_compare_created_and_modified_no_changes_new,
+	dict_compare_created_and_modified_no_changes_new,
+	dict_compare_created_and_modified_no_changes_new,
+	dict_compare_created_and_modified_no_changes_new
+]
+
+dict_list_compare_with_changes_current = [
+	dict_compare_created_and_modified_with_changes_current,
+	dict_compare_created_and_modified_with_changes_current,
+	dict_compare_created_and_modified_with_changes_current,
+	dict_compare_created_and_modified_with_changes_current
+]
+
+dict_list_compare_with_changes_new = [
+	dict_compare_created_and_modified_with_changes_new,
+	dict_compare_created_and_modified_no_changes_new,
+	dict_compare_created_and_modified_no_changes_new,
+	dict_compare_created_and_modified_no_changes_new
+]
+
 class TestZipExtractor(unittest.TestCase):
 	def setUp(self):
 		self.maxDiff = None
@@ -924,6 +1028,55 @@ class TestMisc(unittest.TestCase):
 		"""
 		test = expand_special_values(now_list_input_dict)
 		self.assertDictEqual(test, now_list_output_dict)
+	
+	def test_deep_compare_dict_created_only_no_changes(self):
+		"""
+		Tests that deep compare works for dictionary fields where no changes in dict other than DT_CREATED
+		"""
+		self.assertTrue(deep_field_compare(dict_compare_created_only_no_changes_new, dict_compare_created_only_no_changes_current))
+	
+	def test_deep_compare_dict_modified_only_no_changes(self):
+		"""
+		Tests that deep compare works for dictionary fields where no changes in dict other than DT_MODIFIED
+		"""
+		self.assertTrue(deep_field_compare(dict_compare_modified_only_no_changes_new, dict_compare_modified_only_no_changes_current))
+	
+	def test_deep_compare_dict_created_and_modified_no_changes(self):
+		"""
+		Tests that deep compare works for dictionary fields where no changes in dict other than DT_MODIFIED / DT_CREATED
+		"""
+		self.assertTrue(deep_field_compare(dict_compare_created_and_modified_no_changes_new, dict_compare_created_and_modified_no_changes_current))
+		
+	def test_deep_compare_dict_created_only_with_changes(self):
+		"""
+		Tests that deep compare works for dictionary fields where other changes from DT_CREATED
+		"""
+		self.assertFalse(deep_field_compare(dict_compare_created_only_with_changes_new, dict_compare_created_only_with_changes_current))
+	
+	def test_deep_compare_dict_modified_only_with_changes(self):
+		"""
+		Tests that deep compare works for dictionary fields where other changes from DT_CREATED
+		"""
+		self.assertFalse(deep_field_compare(dict_compare_modified_only_with_changes_new, dict_compare_modified_only_with_changes_current))
+	
+	def test_deep_compare_dict_created_and_modified_with_changes(self):
+		"""
+		Tests that deep compare works for dictionary fields with changes in dict other than DT_MODIFIED / DT_CREATED
+		"""
+		self.assertFalse(deep_field_compare(dict_compare_created_and_modified_with_changes_new, dict_compare_created_and_modified_with_changes_current))
+	
+	def test_deep_compare_dict_list_no_changes(self):
+		"""
+		Tests that deep compare works for a list of dict with no changes
+		"""
+		self.assertTrue(deep_field_compare(dict_list_compare_no_changes_new, dict_list_compare_no_changes_current))
+	
+	def test_deep_compare_dict_list_with_changes(self):
+		"""
+		Tests that deep compare works for a list of dict with with changes
+		"""
+		self.assertFalse(deep_field_compare(dict_list_compare_with_changes_new, dict_list_compare_with_changes_current))
+		
 			
 if __name__ == "__main__":
 	unittest.main()
