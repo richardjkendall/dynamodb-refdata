@@ -135,15 +135,15 @@ def expand_special_values(d):
 			# not a special value
 			return d
 		
-def validate_and_process(data):
+def validate_and_process(input):
 	"""
 	Takes raw data and validates and processes for updates to dynamodb
 	"""
 	tables = {}
-	for table in data:
+	for table in input:
 		table_name = ""
 		table_keys = []
-		raw_data = data[table]
+		raw_data = input[table]
 		keys = sorted(raw_data.keys())
 		if len(keys) >= 1:
 			# check we have a schema and it is valid
