@@ -1,4 +1,4 @@
-(https://travis-ci.org/richardjkendall/dynamodb-refdata.svg?branch=master)
+!(https://travis-ci.org/richardjkendall/dynamodb-refdata.svg?branch=master)
 
 # DynamoDB Reference Data Manager
 I created this set of scripts to help provide the same kind of functionality that you get with Flyway https://flywaydb.org/
