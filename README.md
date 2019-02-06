@@ -1,4 +1,4 @@
-![build status](https://travis-ci.org/richardjkendall/dynamodb-refdata.svg?branch=master "Build status")
+![build status](https://travis-ci.org/richardjkendall/dynamodb-refdata.svg?branch=master "Build status") [![codecov](https://codecov.io/gh/richardjkendall/dynamodb-refdata/branch/master/graph/badge.svg)](https://codecov.io/gh/richardjkendall/dynamodb-refdata)
 
 # DynamoDB Reference Data Manager
 I created this set of scripts to help provide the same kind of functionality that you get with Flyway https://flywaydb.org/
